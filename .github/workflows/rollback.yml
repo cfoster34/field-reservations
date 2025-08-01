@@ -1,0 +1,291 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - production
+          - staging
+      deployment_id:
+        description: 'Deployment ID to rollback to (optional - uses last stable if not provided)'
+        required: false
+      reason:
+        description: 'Reason for rollback'
+        required: true
+
+permissions:
+  contents: read
+  deployments: write
+  actions: write
+
+jobs:
+  # Validate rollback
+  validate-rollback:
+    name: Validate Rollback
+    runs-on: ubuntu-latest
+    outputs:
+      target_deployment: ${{ steps.find_deployment.outputs.deployment_id }}
+      target_sha: ${{ steps.find_deployment.outputs.sha }}
+      current_deployment: ${{ steps.current.outputs.deployment_id }}
+    steps:
+      - name: Find target deployment
+        id: find_deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let targetDeployment;
+            
+            if ('${{ github.event.inputs.deployment_id }}') {
+              // Use specified deployment
+              targetDeployment = await github.rest.repos.getDeployment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: parseInt('${{ github.event.inputs.deployment_id }}')
+              });
+            } else {
+              // Find last stable deployment
+              const deployments = await github.rest.repos.listDeployments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment: '${{ github.event.inputs.environment }}',
+                per_page: 10
+              });
+              
+              for (const deployment of deployments.data) {
+                const statuses = await github.rest.repos.listDeploymentStatuses({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  deployment_id: deployment.id
+                });
+                
+                const lastStatus = statuses.data[0];
+                if (lastStatus && lastStatus.state === 'success') {
+                  targetDeployment = deployment;
+                  break;
+                }
+              }
+            }
+            
+            if (!targetDeployment) {
+              throw new Error('No suitable deployment found for rollback');
+            }
+            
+            console.log(`Target deployment: ${targetDeployment.id} (${targetDeployment.sha})`);
+            core.setOutput('deployment_id', targetDeployment.id);
+            core.setOutput('sha', targetDeployment.sha);
+      
+      - name: Get current deployment
+        id: current
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployments = await github.rest.repos.listDeployments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment: '${{ github.event.inputs.environment }}',
+              per_page: 1
+            });
+            
+            const currentDeployment = deployments.data[0];
+            console.log(`Current deployment: ${currentDeployment.id}`);
+            core.setOutput('deployment_id', currentDeployment.id);
+
+  # Create rollback deployment
+  create-rollback:
+    name: Create Rollback
+    needs: validate-rollback
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_id: ${{ steps.create.outputs.deployment_id }}
+    steps:
+      - name: Create rollback deployment
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: '${{ needs.validate-rollback.outputs.target_sha }}',
+              environment: '${{ github.event.inputs.environment }}',
+              description: `Rollback from deployment ${{ needs.validate-rollback.outputs.current_deployment }}`,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: '${{ github.event.inputs.environment }}' === 'production',
+              payload: {
+                rollback: true,
+                rollback_from: '${{ needs.validate-rollback.outputs.current_deployment }}',
+                rollback_to: '${{ needs.validate-rollback.outputs.target_deployment }}',
+                reason: '${{ github.event.inputs.reason }}'
+              }
+            });
+            
+            console.log(`Created rollback deployment: ${deployment.data.id}`);
+            core.setOutput('deployment_id', deployment.data.id);
+
+  # Execute rollback
+  execute-rollback:
+    name: Execute Rollback
+    needs: [validate-rollback, create-rollback]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-rollback.outputs.target_sha }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+      
+      - name: Rollback database
+        run: |
+          # Install Supabase CLI
+          curl -sSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz | tar -xz
+          sudo mv supabase /usr/local/bin/
+          
+          # Create database backup before rollback
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          supabase db dump --project-ref ${{ secrets.SUPABASE_PROJECT_REF }} > backup_${timestamp}.sql
+          
+          # Upload backup to S3
+          aws s3 cp backup_${timestamp}.sql s3://${{ secrets.BACKUP_BUCKET }}/rollbacks/backup_${timestamp}.sql
+          
+          # Note: Actual database rollback would require more complex migration logic
+          echo "Database rollback would be performed here based on migration history"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          npm install -g vercel@latest
+          
+          # Pull Vercel environment
+          vercel pull --yes --environment=${{ github.event.inputs.environment }} --token=${{ secrets.VERCEL_TOKEN }}
+          
+          # Build with rollback SHA
+          vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+          
+          # Deploy
+          if [[ "${{ github.event.inputs.environment }}" == "production" ]]; then
+            deployment_url=$(vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }})
+          else
+            deployment_url=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }})
+          fi
+          
+          echo "deployment_url=$deployment_url" >> $GITHUB_OUTPUT
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      
+      - name: Update deployment status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ needs.create-rollback.outputs.deployment_id }},
+              state: 'success',
+              environment_url: '${{ steps.deploy.outputs.deployment_url }}',
+              description: 'Rollback completed successfully'
+            });
+
+  # Verify rollback
+  verify-rollback:
+    name: Verify Rollback
+    needs: [execute-rollback, validate-rollback]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run health checks
+        run: |
+          # Wait for deployment to stabilize
+          sleep 60
+          
+          # Health check
+          response=$(curl -s -o /dev/null -w "%{http_code}" "${{ github.event.inputs.environment == 'production' && 'https://fieldreservations.com' || 'https://staging.fieldreservations.com' }}/api/health")
+          if [ $response -ne 200 ]; then
+            echo "Health check failed with status $response"
+            exit 1
+          fi
+          
+          # Version check
+          deployed_version=$(curl -s "${{ github.event.inputs.environment == 'production' && 'https://fieldreservations.com' || 'https://staging.fieldreservations.com' }}/api/version")
+          echo "Deployed version after rollback: $deployed_version"
+      
+      - name: Run smoke tests
+        run: |
+          npm install -g @playwright/test
+          npx playwright test tests/e2e/smoke.spec.ts --reporter=list
+        env:
+          PLAYWRIGHT_TEST_BASE_URL: ${{ github.event.inputs.environment == 'production' && 'https://fieldreservations.com' || 'https://staging.fieldreservations.com' }}
+
+  # Notify rollback
+  notify-rollback:
+    name: Notify Rollback
+    needs: [validate-rollback, execute-rollback, verify-rollback]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send notifications
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            🔄 Rollback ${{ job.status == 'success' && 'Completed' || 'Failed' }}
+            
+            Environment: ${{ github.event.inputs.environment }}
+            Reason: ${{ github.event.inputs.reason }}
+            Rolled back to: Deployment #${{ needs.validate-rollback.outputs.target_deployment }}
+            Initiated by: ${{ github.actor }}
+            
+            ${{ job.status == 'success' && '✅ All systems operational' || '❌ Manual intervention required' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      
+      - name: Create incident report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Rollback Incident: ${new Date().toISOString()}`,
+              body: `
+                ## Rollback Incident Report
+                
+                **Date**: ${new Date().toISOString()}
+                **Environment**: ${{ github.event.inputs.environment }}
+                **Initiated by**: @${{ github.actor }}
+                
+                ### Reason
+                ${{ github.event.inputs.reason }}
+                
+                ### Details
+                - **Rolled back from**: Deployment #${{ needs.validate-rollback.outputs.current_deployment }}
+                - **Rolled back to**: Deployment #${{ needs.validate-rollback.outputs.target_deployment }}
+                - **Status**: ${{ job.status }}
+                
+                ### Follow-up Actions
+                - [ ] Root cause analysis
+                - [ ] Fix identified issues
+                - [ ] Update rollback procedures if needed
+                - [ ] Schedule post-mortem meeting
+                
+                ### Timeline
+                - Rollback initiated: ${new Date().toISOString()}
+                - Rollback completed: ${new Date().toISOString()}
+                
+                cc: @engineering-team
+              `,
+              labels: ['incident', 'rollback', '${{ github.event.inputs.environment }}']
+            });

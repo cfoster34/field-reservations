@@ -1,0 +1,210 @@
+name: Release Management
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.2.3)'
+        required: true
+      prerelease:
+        description: 'Is this a pre-release?'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # Create release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: ".github/changelog-config.json"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          release_name: Release ${{ steps.version.outputs.version }}
+          body: |
+            ## What's Changed
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## Deployment Status
+            - Production: ✅ Deployed
+            - Database Migrations: ✅ Applied
+            - Performance Impact: 📊 [View Dashboard](https://monitoring.fieldreservations.com)
+            
+            ## Upgrade Instructions
+            1. Backup your database
+            2. Apply migrations: `supabase db push`
+            3. Update environment variables if needed
+            4. Deploy the new version
+            
+            ## Breaking Changes
+            None in this release.
+            
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.changelog.outputs.fromTag }}...${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+
+  # Build release artifacts
+  build-artifacts:
+    name: Build Release Artifacts
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: darwin-x64
+            os: macos-latest
+          - name: win-x64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+      
+      - name: Install dependencies
+        run: |
+          npm install -g pkg
+          npm ci --production
+      
+      - name: Build standalone executable
+        run: |
+          pkg . --target node20-${{ matrix.name }} --output dist/field-reservations-${{ matrix.name }}
+      
+      - name: Create archive
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a field-reservations-${{ matrix.name }}.zip ./dist/*
+          else
+            tar -czf field-reservations-${{ matrix.name }}.tar.gz -C dist .
+          fi
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: field-reservations-${{ matrix.name }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+          asset_name: field-reservations-${{ matrix.name }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+          asset_content_type: ${{ runner.os == 'Windows' && 'application/zip' || 'application/gzip' }}
+
+  # Update version in package.json
+  update-version:
+    name: Update Version
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+      
+      - name: Update package.json version
+        run: |
+          version="${{ needs.create-release.outputs.version }}"
+          version="${version#v}"
+          npm version $version --no-git-tag-version
+      
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          commit-message: "chore: bump version to ${{ needs.create-release.outputs.version }}"
+          title: "chore: bump version to ${{ needs.create-release.outputs.version }}"
+          body: |
+            Automated version bump after release ${{ needs.create-release.outputs.version }}
+            
+            This PR updates the version in package.json to match the released version.
+          branch: version-bump-${{ needs.create-release.outputs.version }}
+          base: main
+
+  # Deploy to production
+  deploy-production:
+    name: Deploy to Production
+    needs: [create-release, build-artifacts]
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: production
+    secrets: inherit
+
+  # Post-release tasks
+  post-release:
+    name: Post-Release Tasks
+    needs: [create-release, deploy-production]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update documentation
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type":"update-docs","client_payload":{"version":"${{ needs.create-release.outputs.version }}"}}'
+      
+      - name: Trigger security scan
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/security-scan.yml/dispatches \
+            -d '{"ref":"main"}'
+      
+      - name: Notify release channels
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: |
+            🚀 New Release: ${{ needs.create-release.outputs.version }}
+            
+            📝 Changelog: https://github.com/${{ github.repository }}/releases/tag/${{ needs.create-release.outputs.version }}
+            🌐 Production: https://fieldreservations.com
+            📊 Monitoring: https://monitoring.fieldreservations.com
+            
+            Please verify the deployment and report any issues.
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

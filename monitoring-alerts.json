@@ -1,0 +1,39 @@
+{
+  "name": "High Error Rate Alert",
+  "conditions": [
+    {
+      "id": "error_rate",
+      "interval": "5m",
+      "aggregation": "percentage",
+      "filter": {
+        "match": "all",
+        "conditions": [
+          {
+            "name": "environment",
+            "value": "production"
+          }
+        ]
+      },
+      "threshold": 5.0,
+      "comparison": "above"
+    }
+  ],
+  "actions": [
+    {
+      "id": "email",
+      "type": "email",
+      "targetType": "team",
+      "targetIdentifier": "engineering"
+    },
+    {
+      "id": "slack",
+      "type": "slack",
+      "targetType": "workspace",
+      "targetIdentifier": "#alerts"
+    }
+  ],
+  "frequency": 5,
+  "name": "High Error Rate",
+  "owner": "engineering",
+  "projects": ["field-reservations"]
+}

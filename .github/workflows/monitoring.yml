@@ -1,0 +1,319 @@
+name: Monitoring & Health Checks
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Every 5 minutes
+  workflow_dispatch:
+
+jobs:
+  # Health checks
+  health-checks:
+    name: Health Checks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [production, staging]
+    steps:
+      - name: Check API health
+        id: api_health
+        run: |
+          if [[ "${{ matrix.environment }}" == "production" ]]; then
+            base_url="https://fieldreservations.com"
+          else
+            base_url="https://staging.fieldreservations.com"
+          fi
+          
+          # Health endpoint
+          health_response=$(curl -s -o /dev/null -w "%{http_code}" "$base_url/api/health")
+          echo "health_status=$health_response" >> $GITHUB_OUTPUT
+          
+          # Database connectivity
+          db_response=$(curl -s -o /dev/null -w "%{http_code}" "$base_url/api/health/db")
+          echo "db_status=$db_response" >> $GITHUB_OUTPUT
+          
+          # Cache connectivity
+          cache_response=$(curl -s -o /dev/null -w "%{http_code}" "$base_url/api/health/cache")
+          echo "cache_status=$cache_response" >> $GITHUB_OUTPUT
+          
+          # Payment provider
+          payment_response=$(curl -s -o /dev/null -w "%{http_code}" "$base_url/api/health/payments")
+          echo "payment_status=$payment_response" >> $GITHUB_OUTPUT
+      
+      - name: Check critical endpoints
+        id: endpoints
+        run: |
+          if [[ "${{ matrix.environment }}" == "production" ]]; then
+            base_url="https://fieldreservations.com"
+          else
+            base_url="https://staging.fieldreservations.com"
+          fi
+          
+          endpoints=(
+            "/api/auth/session"
+            "/api/fields"
+            "/api/reservations"
+            "/api/payments/webhook"
+          )
+          
+          failed_endpoints=""
+          for endpoint in "${endpoints[@]}"; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$base_url$endpoint")
+            if [[ $response -ge 500 ]]; then
+              failed_endpoints="$failed_endpoints $endpoint($response)"
+            fi
+          done
+          
+          if [[ -n "$failed_endpoints" ]]; then
+            echo "failed_endpoints=$failed_endpoints" >> $GITHUB_OUTPUT
+            echo "status=failure" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create incident if unhealthy
+        if: steps.api_health.outputs.health_status != '200' || steps.endpoints.outputs.status == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'incident,auto-generated,${{ matrix.environment }}',
+              state: 'open'
+            });
+            
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 ${{ matrix.environment }} Health Check Failed`,
+                body: `
+                  ## Health Check Failure
+                  
+                  **Environment**: ${{ matrix.environment }}
+                  **Time**: ${new Date().toISOString()}
+                  
+                  ### Status
+                  - API Health: ${{ steps.api_health.outputs.health_status }}
+                  - Database: ${{ steps.api_health.outputs.db_status }}
+                  - Cache: ${{ steps.api_health.outputs.cache_status }}
+                  - Payments: ${{ steps.api_health.outputs.payment_status }}
+                  
+                  ### Failed Endpoints
+                  ${{ steps.endpoints.outputs.failed_endpoints || 'None' }}
+                  
+                  ### Actions
+                  - Check error logs in monitoring dashboard
+                  - Verify deployment status
+                  - Check external service status
+                  
+                  This issue will auto-close when services are healthy again.
+                `,
+                labels: ['incident', 'auto-generated', '${{ matrix.environment }}', 'urgent']
+              });
+            }
+      
+      - name: Close incident if healthy
+        if: steps.api_health.outputs.health_status == '200' && steps.endpoints.outputs.status == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'incident,auto-generated,${{ matrix.environment }}',
+              state: 'open'
+            });
+            
+            for (const issue of issues.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                body: issue.body + '\n\n---\n\n✅ Services restored at ' + new Date().toISOString()
+              });
+            }
+
+  # Performance monitoring
+  performance-monitoring:
+    name: Performance Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Lighthouse performance check
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          urls: |
+            https://fieldreservations.com
+            https://fieldreservations.com/booking
+            https://fieldreservations.com/analytics
+          uploadArtifacts: false
+          temporaryPublicStorage: false
+          runs: 3
+      
+      - name: Analyze performance metrics
+        run: |
+          # Extract and analyze Lighthouse results
+          performance_score=$(cat .lighthouseci/lhr-*.json | jq -r '.categories.performance.score' | awk '{sum+=$1} END {print sum/NR}')
+          
+          # Alert if performance drops below threshold
+          if (( $(echo "$performance_score < 0.8" | bc -l) )); then
+            echo "Performance score below threshold: $performance_score"
+            exit 1
+          fi
+
+  # Synthetic monitoring
+  synthetic-monitoring:
+    name: Synthetic Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+      
+      - name: Install Playwright
+        run: |
+          npm install -g @playwright/test
+          npx playwright install chromium
+      
+      - name: Run synthetic tests
+        run: |
+          cat > synthetic-test.spec.ts << 'EOF'
+          import { test, expect } from '@playwright/test';
+          
+          test('user can complete booking flow', async ({ page }) => {
+            // Navigate to booking page
+            await page.goto('https://fieldreservations.com/booking');
+            
+            // Select a field
+            await page.click('[data-testid="field-card"]:first-child');
+            
+            // Select date and time
+            await page.click('[data-testid="date-picker"]');
+            await page.click('[data-testid="available-date"]:first-child');
+            await page.click('[data-testid="time-slot"]:first-child');
+            
+            // Verify booking details are shown
+            await expect(page.locator('[data-testid="booking-summary"]')).toBeVisible();
+            
+            // Measure performance
+            const metrics = await page.evaluate(() => ({
+              navigationTiming: performance.getEntriesByType('navigation')[0],
+              resourceTiming: performance.getEntriesByType('resource'),
+              paintTiming: performance.getEntriesByType('paint')
+            }));
+            
+            console.log('Performance metrics:', JSON.stringify(metrics, null, 2));
+          });
+          
+          test('API response times', async ({ request }) => {
+            const endpoints = [
+              '/api/fields',
+              '/api/reservations',
+              '/api/auth/session'
+            ];
+            
+            for (const endpoint of endpoints) {
+              const start = Date.now();
+              const response = await request.get(`https://fieldreservations.com${endpoint}`);
+              const duration = Date.now() - start;
+              
+              expect(response.status()).toBeLessThan(500);
+              expect(duration).toBeLessThan(1000); // 1 second threshold
+              
+              console.log(`${endpoint}: ${duration}ms`);
+            }
+          });
+          EOF
+          
+          npx playwright test synthetic-test.spec.ts --reporter=json > synthetic-results.json
+      
+      - name: Send metrics to monitoring service
+        run: |
+          # Send to Datadog
+          curl -X POST "https://api.datadoghq.com/api/v1/series" \
+            -H "Content-Type: application/json" \
+            -H "DD-API-KEY: ${{ secrets.DD_API_KEY }}" \
+            -d @synthetic-results.json
+
+  # Error rate monitoring
+  error-monitoring:
+    name: Error Rate Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Sentry for new errors
+        run: |
+          # Get error counts from Sentry
+          errors=$(curl -s "https://sentry.io/api/0/organizations/${{ secrets.SENTRY_ORG }}/issues/" \
+            -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
+            -G \
+            --data-urlencode "project=${{ secrets.SENTRY_PROJECT }}" \
+            --data-urlencode "statsPeriod=1h" \
+            --data-urlencode "query=is:unresolved level:error")
+          
+          error_count=$(echo $errors | jq '. | length')
+          
+          if [[ $error_count -gt 10 ]]; then
+            echo "High error rate detected: $error_count errors in the last hour"
+            
+            # Create alert
+            curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"text\": \"🚨 High error rate detected: $error_count errors in the last hour\",
+                \"attachments\": [{
+                  \"color\": \"danger\",
+                  \"fields\": [{
+                    \"title\": \"Error Count\",
+                    \"value\": \"$error_count\",
+                    \"short\": true
+                  }, {
+                    \"title\": \"Time Period\",
+                    \"value\": \"Last hour\",
+                    \"short\": true
+                  }],
+                  \"actions\": [{
+                    \"type\": \"button\",
+                    \"text\": \"View in Sentry\",
+                    \"url\": \"https://sentry.io/organizations/${{ secrets.SENTRY_ORG }}/issues/\"
+                  }]
+                }]
+              }"
+          fi
+
+  # Database monitoring
+  database-monitoring:
+    name: Database Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check database metrics
+        run: |
+          # Install Supabase CLI
+          curl -sSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz | tar -xz
+          sudo mv supabase /usr/local/bin/
+          
+          # Get database metrics
+          metrics=$(supabase inspect db --project-ref ${{ secrets.SUPABASE_PROJECT_REF }} --output json)
+          
+          # Check connection count
+          connection_count=$(echo $metrics | jq '.connections.active')
+          max_connections=$(echo $metrics | jq '.connections.max')
+          
+          if [[ $connection_count -gt $(($max_connections * 80 / 100)) ]]; then
+            echo "High database connection usage: $connection_count/$max_connections"
+          fi
+          
+          # Check storage usage
+          storage_used=$(echo $metrics | jq '.storage.used_bytes')
+          storage_limit=$(echo $metrics | jq '.storage.limit_bytes')
+          
+          if [[ $storage_used -gt $(($storage_limit * 90 / 100)) ]]; then
+            echo "High database storage usage: $storage_used/$storage_limit bytes"
+          fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

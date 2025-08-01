@@ -1,0 +1,138 @@
+{
+  "categories": [
+    {
+      "title": "## 🚀 Features",
+      "labels": ["feature", "enhancement"]
+    },
+    {
+      "title": "## 🐛 Bug Fixes",
+      "labels": ["fix", "bug", "bugfix"]
+    },
+    {
+      "title": "## 🔒 Security",
+      "labels": ["security", "security-critical", "security-high"]
+    },
+    {
+      "title": "## 📦 Dependencies",
+      "labels": ["dependencies", "deps"]
+    },
+    {
+      "title": "## 🧪 Tests",
+      "labels": ["test", "tests", "testing"]
+    },
+    {
+      "title": "## 📚 Documentation",
+      "labels": ["documentation", "docs"]
+    },
+    {
+      "title": "## 🏗️ Infrastructure",
+      "labels": ["infrastructure", "ci", "cd", "devops"]
+    },
+    {
+      "title": "## ♻️ Refactoring",
+      "labels": ["refactor", "refactoring"]
+    },
+    {
+      "title": "## 🎨 UI/UX",
+      "labels": ["ui", "ux", "design", "frontend"]
+    },
+    {
+      "title": "## ⚡ Performance",
+      "labels": ["performance", "optimization"]
+    },
+    {
+      "title": "## 🌐 Internationalization",
+      "labels": ["i18n", "l10n", "translation"]
+    },
+    {
+      "title": "## ♿ Accessibility",
+      "labels": ["accessibility", "a11y"]
+    }
+  ],
+  "ignore_labels": [
+    "ignore-for-release",
+    "automated",
+    "invalid",
+    "wontfix",
+    "duplicate"
+  ],
+  "sort": {
+    "order": "ASC",
+    "on_property": "mergedAt"
+  },
+  "template": "${{CHANGELOG}}\n\n**Full Changelog**: ${{RELEASE_DIFF}}\n",
+  "pr_template": "- ${{TITLE}} by @${{AUTHOR}} in #${{NUMBER}}",
+  "empty_template": "- No changes",
+  "label_extractor": [
+    {
+      "pattern": "^fix\\(",
+      "labels": ["fix"]
+    },
+    {
+      "pattern": "^feat\\(",
+      "labels": ["feature"]
+    },
+    {
+      "pattern": "^docs\\(",
+      "labels": ["documentation"]
+    },
+    {
+      "pattern": "^test\\(",
+      "labels": ["test"]
+    },
+    {
+      "pattern": "^refactor\\(",
+      "labels": ["refactor"]
+    },
+    {
+      "pattern": "^perf\\(",
+      "labels": ["performance"]
+    },
+    {
+      "pattern": "^security\\(",
+      "labels": ["security"]
+    },
+    {
+      "pattern": "^deps\\(",
+      "labels": ["dependencies"]
+    },
+    {
+      "pattern": "^ci\\(",
+      "labels": ["ci"]
+    },
+    {
+      "pattern": "^chore\\(",
+      "labels": ["chore"]
+    }
+  ],
+  "duplicate_filter": {
+    "pattern": "^(revert|Revert)",
+    "on_property": "title",
+    "method": "match"
+  },
+  "transformers": [
+    {
+      "pattern": "\\[.*\\]",
+      "flags": "g",
+      "target": ""
+    }
+  ],
+  "max_tags_to_fetch": 200,
+  "max_pull_requests": 200,
+  "max_back_track_time_days": 365,
+  "exclude_merge_branches": [
+    "main",
+    "develop",
+    "staging"
+  ],
+  "tag_resolver": {
+    "method": "semver",
+    "filter": {
+      "pattern": "v[0-9]+\\.[0-9]+\\.[0-9]+",
+      "flags": "gu"
+    }
+  },
+  "base_branches": [
+    "main"
+  ]
+}

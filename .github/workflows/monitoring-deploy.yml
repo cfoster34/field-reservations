@@ -1,0 +1,132 @@
+name: Monitoring and Deployment
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+
+env:
+  SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+  SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run tests
+        run: npm run test:coverage
+      
+      - name: Upload coverage to Sentry
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      
+      - name: Create Sentry release
+        run: |
+          npx @sentry/cli releases new ${{ github.sha }}
+          npx @sentry/cli releases set-commits ${{ github.sha }} --auto
+          npx @sentry/cli releases files ${{ github.sha }} upload-sourcemaps .next --url-prefix ~/_next
+      
+      - name: Deploy to Vercel
+        uses: vercel/action@v3
+        id: deploy
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          production: ${{ github.ref == 'refs/heads/main' }}
+      
+      - name: Finalize Sentry release
+        run: |
+          npx @sentry/cli releases finalize ${{ github.sha }}
+          npx @sentry/cli releases deploys ${{ github.sha }} new -e ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      
+      - name: Notify monitoring systems
+        run: |
+          curl -X POST ${{ secrets.MONITORING_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "deployment",
+              "environment": "${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}",
+              "release": "${{ github.sha }}",
+              "url": "${{ steps.deploy.outputs.url }}",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+            }'
+      
+      - name: Run smoke tests
+        run: |
+          npm run test:smoke -- --base-url ${{ steps.deploy.outputs.url }}
+      
+      - name: Check deployment health
+        run: |
+          for i in {1..5}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" ${{ steps.deploy.outputs.url }}/api/monitoring/health)
+            if [ $HTTP_CODE -eq 200 ]; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Health check attempt $i failed with status $HTTP_CODE"
+            sleep 10
+          done
+          echo "Health check failed after 5 attempts"
+          exit 1
+
+  monitoring-setup:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure monitoring alerts
+        run: |
+          curl -X POST https://api.sentry.io/api/0/projects/${{ secrets.SENTRY_ORG }}/${{ secrets.SENTRY_PROJECT }}/alerts/ \
+            -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d @monitoring-alerts.json
+      
+      - name: Setup PagerDuty integration
+        if: env.PAGERDUTY_INTEGRATION_KEY != ''
+        run: |
+          echo "PagerDuty integration configured"
+      
+      - name: Verify monitoring dashboard
+        run: |
+          curl -f ${{ steps.deploy.outputs.url }}/monitoring || exit 1

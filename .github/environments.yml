@@ -1,0 +1,142 @@
+# GitHub Environments Configuration
+# Configure these settings in Settings > Environments
+
+environments:
+  production:
+    # Protection rules
+    protection_rules:
+      # Required reviewers
+      required_reviewers:
+        - "@engineering-leads"
+        - "@product-team"
+      
+      # Wait timer (in minutes) before deployment
+      wait_timer: 5
+      
+      # Deployment branches
+      deployment_branches:
+        policy: selected
+        branches:
+          - main
+          - hotfix/*
+    
+    # Environment secrets
+    secrets:
+      - SUPABASE_URL
+      - SUPABASE_ANON_KEY
+      - SUPABASE_SERVICE_ROLE_KEY
+      - STRIPE_SECRET_KEY
+      - STRIPE_PUBLISHABLE_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - SENDGRID_API_KEY
+      - SENTRY_DSN
+      - SENTRY_AUTH_TOKEN
+      - VERCEL_TOKEN
+      - VERCEL_ORG_ID
+      - VERCEL_PROJECT_ID
+      - SLACK_WEBHOOK_URL
+      - DISCORD_WEBHOOK
+      - DD_API_KEY
+      - DD_APP_KEY
+    
+    # Environment variables
+    variables:
+      - NODE_ENV: production
+      - NEXT_PUBLIC_API_URL: https://fieldreservations.com
+      - NEXT_PUBLIC_APP_URL: https://fieldreservations.com
+      - SENTRY_ENVIRONMENT: production
+      - LOG_LEVEL: error
+
+  staging:
+    # Protection rules
+    protection_rules:
+      # Required reviewers
+      required_reviewers:
+        - "@engineering-team"
+      
+      # No wait timer for staging
+      wait_timer: 0
+      
+      # Deployment branches
+      deployment_branches:
+        policy: selected
+        branches:
+          - staging
+          - release/*
+    
+    # Environment secrets (same as production but different values)
+    secrets:
+      - SUPABASE_URL
+      - SUPABASE_ANON_KEY
+      - SUPABASE_SERVICE_ROLE_KEY
+      - STRIPE_SECRET_KEY # Use test keys
+      - STRIPE_PUBLISHABLE_KEY # Use test keys
+      - STRIPE_WEBHOOK_SECRET
+      - SENDGRID_API_KEY
+      - SENTRY_DSN
+      - SENTRY_AUTH_TOKEN
+      - VERCEL_TOKEN
+      - VERCEL_ORG_ID
+      - VERCEL_PROJECT_ID
+      - SLACK_WEBHOOK_URL
+      - DISCORD_WEBHOOK
+    
+    # Environment variables
+    variables:
+      - NODE_ENV: staging
+      - NEXT_PUBLIC_API_URL: https://staging.fieldreservations.com
+      - NEXT_PUBLIC_APP_URL: https://staging.fieldreservations.com
+      - SENTRY_ENVIRONMENT: staging
+      - LOG_LEVEL: info
+
+  preview:
+    # Protection rules
+    protection_rules:
+      # No required reviewers for preview
+      required_reviewers: []
+      
+      # No wait timer
+      wait_timer: 0
+      
+      # Deployment branches
+      deployment_branches:
+        policy: all
+    
+    # Environment secrets
+    secrets:
+      - SUPABASE_URL
+      - SUPABASE_ANON_KEY
+      - SUPABASE_SERVICE_ROLE_KEY
+      - STRIPE_TEST_SECRET_KEY
+      - STRIPE_TEST_PUBLISHABLE_KEY
+      - SENDGRID_API_KEY
+      - VERCEL_TOKEN
+      - VERCEL_ORG_ID
+      - VERCEL_PROJECT_ID
+    
+    # Environment variables
+    variables:
+      - NODE_ENV: development
+      - NEXT_PUBLIC_API_URL: https://preview.fieldreservations.com
+      - NEXT_PUBLIC_APP_URL: https://preview.fieldreservations.com
+      - LOG_LEVEL: debug
+
+# Deployment approval workflow
+deployment_approval:
+  production:
+    required_approvers: 2
+    approver_teams:
+      - engineering-leads
+      - product-team
+    approval_timeout: 24h
+    notifications:
+      slack_channel: "#deployments"
+      email_list: "deployments@fieldreservations.com"
+    
+  staging:
+    required_approvers: 1
+    approver_teams:
+      - engineering
+    approval_timeout: 2h
+    notifications:
+      slack_channel: "#deployments-staging"

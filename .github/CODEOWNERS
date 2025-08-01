@@ -1,0 +1,67 @@
+# CODEOWNERS
+# This file defines code ownership for automatic review requests
+
+# Default owners for everything in the repo
+* @engineering-team
+
+# Frontend code
+/src/app/ @frontend-team
+/src/components/ @frontend-team
+/src/styles/ @frontend-team
+/src/hooks/ @frontend-team
+/src/providers/ @frontend-team
+*.css @frontend-team
+*.scss @frontend-team
+
+# Backend/API code
+/src/app/api/ @backend-team
+/src/lib/ @backend-team
+/src/middleware.ts @backend-team
+
+# Database and migrations
+/supabase/ @backend-team @dba-team
+/supabase/migrations/ @dba-team
+
+# Infrastructure and DevOps
+/.github/ @devops-team
+/vercel.json @devops-team
+/next.config.js @devops-team
+/package.json @engineering-leads
+/package-lock.json @engineering-leads
+/pnpm-lock.yaml @engineering-leads
+
+# Security-sensitive files
+/src/lib/supabase/ @security-team @backend-team
+/src/lib/stripe/ @security-team @backend-team
+/src/app/api/auth/ @security-team
+/src/app/api/payments/ @security-team @finance-team
+*.env* @security-team @devops-team
+
+# Testing
+/__tests__/ @qa-team
+/tests/ @qa-team
+/playwright.config.ts @qa-team
+/jest.config.js @qa-team
+*.test.ts @qa-team
+*.test.tsx @qa-team
+*.spec.ts @qa-team
+*.spec.tsx @qa-team
+
+# Documentation
+*.md @documentation-team
+/docs/ @documentation-team
+
+# Critical business logic
+/src/app/api/reservations/ @backend-team @product-team
+/src/app/api/payments/ @backend-team @finance-team
+/src/lib/calendar/ @backend-team @product-team
+/src/lib/notifications/ @backend-team @product-team
+
+# Analytics and monitoring
+/src/app/api/analytics/ @analytics-team @backend-team
+/src/components/analytics/ @analytics-team @frontend-team
+
+# Mobile/PWA specific
+/public/manifest.json @mobile-team
+/public/sw.js @mobile-team
+/src/providers/pwa-provider.tsx @mobile-team

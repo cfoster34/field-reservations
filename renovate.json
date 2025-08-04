@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:base",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:allNonMajor",
+    "schedule:weekly"
+  ],
+  "timezone": "America/New_York",
+  "schedule": ["after 10pm and before 5am on every weekday", "every weekend"],
+  "labels": ["dependencies", "renovate"],
+  "packageRules": [
+    {
+      "matchPackagePatterns": ["*"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch",
+      "automerge": true
+    },
+    {
+      "matchPackagePatterns": ["^@types/"],
+      "groupName": "all @types packages",
+      "automerge": true
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["node"],
+      "allowedVersions": "20.x"
+    },
+    {
+      "matchPackagePatterns": ["^@supabase/", "^@stripe/", "next", "react"],
+      "groupName": "critical dependencies",
+      "labels": ["critical-update"],
+      "automerge": false
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "assignees": ["@security-team"]
+  },
+  "prConcurrentLimit": 10,
+  "prCreation": "immediate",
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
+  "dependencyDashboardApproval": true,
+  "postUpdateOptions": [
+    "pnpmDedupe",
+    "yarnDedupeHighest"
+  ]
+}
